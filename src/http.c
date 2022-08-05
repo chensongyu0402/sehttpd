@@ -223,88 +223,83 @@ void do_request(void *ptr)
     webroot = r->root;
 
     del_timer(r);
-    for (;;) {
-        char *plast = &r->buf[r->last % MAX_BUF];
-        size_t remain_size =
-            MIN(MAX_BUF - (r->last - r->pos) - 1, MAX_BUF - r->last % MAX_BUF);
 
-        int n = read(fd, plast, remain_size);
-        assert(r->last - r->pos < MAX_BUF && "request buffer overflow!");
+    int n = read(fd, r->buf, MAX_BUF);
 
-        if (n == 0) /* EOF */
-            goto err;
+    if (n == 0) /* EOF */
+        goto err;
 
-        if (n < 0) {
-            if (errno != EAGAIN) {
-                log_err("read err, and errno = %d", errno);
-                goto err;
-            }
-            break;
-        }
-
-        r->last += n;
-        assert(r->last - r->pos < MAX_BUF && "request buffer overflow!");
-
-        /* about to parse request line */
-        rc = http_parse_request_line(r);
-        if (rc == EAGAIN)
-            continue;
-        if (rc != 0) {
-            log_err("rc != 0");
+    if (n < 0) {
+        if (errno != EAGAIN) {
+            log_err("read err, and errno = %d", errno);
             goto err;
         }
-
-        debug("uri = %.*s", (int) (r->uri_end - r->uri_start),
-              (char *) r->uri_start);
-
-        rc = http_parse_request_body(r);
-        if (rc == EAGAIN)
-            continue;
-        if (rc != 0) {
-            log_err("rc != 0");
-            goto err;
-        }
-
-        /* handle http header */
-        http_out_t *out = malloc(sizeof(http_out_t));
-        if (!out) {
-            log_err("no enough space for http_out_t");
-            exit(1);
-        }
-
-        init_http_out(out, fd);
-
-        parse_uri(r->uri_start, r->uri_end - r->uri_start, filename);
-
-        struct stat sbuf;
-        if (stat(filename, &sbuf) < 0) {
-            do_error(fd, filename, "404", "Not Found", "Can't find the file");
-            continue;
-        }
-
-        if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) {
-            do_error(fd, filename, "403", "Forbidden", "Can't read the file");
-            continue;
-        }
-
-        out->mtime = sbuf.st_mtime;
-
-        http_handle_header(r, out);
-        assert(list_empty(&(r->list)) && "header list should be empty");
-
-        if (!out->status)
-            out->status = HTTP_OK;
-
-        serve_static(fd, filename, sbuf.st_size, out);
-
-        if (!out->keep_alive) {
-            debug("no keep_alive! ready to close");
-            free(out);
-            goto close;
-        }
-        free(out);
+        goto end;
     }
 
+    r->last += n;
+
+    /* about to parse request line */
+    rc = http_parse_request_line(r);
+    if (rc == EAGAIN)
+        goto end;
+    if (rc != 0) {
+        log_err("rc != 0, rc = %d", rc);
+        goto err;
+    }
+
+    debug("uri = %.*s", (int) (r->uri_end - r->uri_start),
+          (char *) r->uri_start);
+
+    rc = http_parse_request_body(r);
+    if (rc == EAGAIN)
+        goto end;
+    if (rc != 0) {
+        log_err("rc != 0 rc = %d", rc);
+        goto err;
+    }
+
+    /* handle http header */
+    http_out_t *out = malloc(sizeof(http_out_t));
+    if (!out) {
+        log_err("no enough space for http_out_t");
+        exit(1);
+    }
+
+    init_http_out(out, fd);
+
+    parse_uri(r->uri_start, r->uri_end - r->uri_start, filename);
+
+    struct stat sbuf;
+    if (stat(filename, &sbuf) < 0) {
+        do_error(fd, filename, "404", "Not Found", "Can't find the file");
+        goto end;
+    }
+
+    if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) {
+        do_error(fd, filename, "403", "Forbidden", "Can't read the file");
+        goto end;
+    }
+
+    out->mtime = sbuf.st_mtime;
+
+    http_handle_header(r, out);
+    assert(list_empty(&(r->list)) && "header list should be empty");
+
+    if (!out->status)
+        out->status = HTTP_OK;
+
+    serve_static(fd, filename, sbuf.st_size, out);
+
+    if (!out->keep_alive) {
+        debug("no keep_alive! ready to close");
+        free(out);
+        goto close;
+    }
+    free(out);
+
+end:;
+    r->pos = r->last = 0;
     struct epoll_event event = {
         .data.ptr = ptr,
         .events = EPOLLIN | EPOLLET | EPOLLONESHOT,
