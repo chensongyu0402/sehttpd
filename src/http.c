@@ -196,13 +196,9 @@ static void serve_static(int fd,
     int srcfd = open(filename, O_RDONLY, 0);
     assert(srcfd > 2 && "open error");
     /* TODO: use sendfile(2) for zero-copy support */
-    char *srcaddr = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
-    assert(srcaddr != (void *) -1 && "mmap error");
+    n = sendfile(fd, srcfd, 0, filesize);
+    assert(n == filesize && "mmap error");
     close(srcfd);
-
-    writen(fd, srcaddr, filesize);
-
-    munmap(srcaddr, filesize);
 }
 
 static inline int init_http_out(http_out_t *o, int fd)
