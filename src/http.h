@@ -46,6 +46,7 @@ typedef struct {
     void *cur_header_value_start, *cur_header_value_end;
 
     void *timer;
+    int pool_id;
 } http_request_t;
 
 typedef struct {
