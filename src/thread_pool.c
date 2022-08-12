@@ -375,3 +375,15 @@ static void jobqueue_destroy(jobqueue *jobqueue_p)
     jobqueue_clear(jobqueue_p);
     free(jobqueue_p->has_jobs);
 }
+
+/* Init semaphore to 1 or 0 */
+static void bsem_init(bsem *bsem_p, int value)
+{
+    if (value < 0 || value > 1) {
+        err("bsem_init(): Binary semaphore can take only values 1 or 0");
+        exit(1);
+    }
+    pthread_mutex_init(&(bsem_p->mutex), NULL);
+    pthread_cond_init(&(bsem_p->cond), NULL);
+    bsem_p->v = value;
+}
