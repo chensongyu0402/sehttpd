@@ -403,7 +403,6 @@ static void bsem_post(bsem *bsem_p)
     pthread_mutex_unlock(&bsem_p->mutex);
 }
 
-
 /* Post to all threads */
 static void bsem_post_all(bsem *bsem_p)
 {
@@ -412,7 +411,6 @@ static void bsem_post_all(bsem *bsem_p)
     pthread_cond_broadcast(&bsem_p->cond);
     pthread_mutex_unlock(&bsem_p->mutex);
 }
-
 
 /* Wait on semaphore until semaphore has value 0 */
 static void bsem_wait(bsem *bsem_p)
