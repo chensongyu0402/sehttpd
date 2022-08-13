@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -29,7 +30,7 @@ static ssize_t writen(int fd, void *usrbuf, size_t n)
             if (errno == EINTR) /* interrupted by sig handler return */
                 nwritten = 0;   /* and call write() again */
             else {
-                log_err("errno == %d\n", errno);
+                // log_err("errno == %d\n", errno);
                 return -1; /* errrno set by write() */
             }
         }
@@ -195,7 +196,6 @@ static void serve_static(int fd,
 
     int srcfd = open(filename, O_RDONLY, 0);
     assert(srcfd > 2 && "open error");
-    /* TODO: use sendfile(2) for zero-copy support */
     n = sendfile(fd, srcfd, 0, filesize);
     assert(n == filesize && "mmap error");
     close(srcfd);
@@ -296,13 +296,17 @@ void do_request(void *ptr)
 
 end:;
     r->pos = r->last = 0;
+
+    pthread_mutex_lock(&timer_lock);
+    add_timer(r, TIMEOUT_DEFAULT, http_close_conn);
+    pthread_mutex_unlock(&timer_lock);
+
     struct epoll_event event = {
         .data.ptr = ptr,
         .events = EPOLLIN | EPOLLET | EPOLLONESHOT,
     };
     epoll_ctl(r->epfd, EPOLL_CTL_MOD, r->fd, &event);
 
-    add_timer(r, TIMEOUT_DEFAULT, http_close_conn);
     return;
 
 err:
