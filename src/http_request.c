@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "http.h"
+#include "memory_pool.h"
 
 int http_close_conn(http_request_t *r)
 {
@@ -18,7 +19,7 @@ int http_close_conn(http_request_t *r)
      * descriptor is explicitly removed using epoll_ctl(2) EPOLL_CTL_DEL).
      */
     close(r->fd);
-    free(r);
+    free_request(r);
     return 0;
 }
 
