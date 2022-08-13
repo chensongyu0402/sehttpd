@@ -19,6 +19,9 @@ typedef struct {
     prio_queue_comparator comp;
 } prio_queue_t;
 
+pthread_mutex_t timer_lock;
+pthread_cond_t timer_notify;
+
 static bool prio_queue_init(prio_queue_t *ptr,
                             prio_queue_comparator comp,
                             size_t size)
@@ -65,6 +68,7 @@ static bool resize(prio_queue_t *ptr, size_t new_size)
     }
 
     memcpy(new_ptr, ptr->priv, sizeof(void *) * (ptr->nalloc + 1));
+    /* FIXME: segmentation fault in multithread environment */
     free(ptr->priv);
     ptr->priv = new_ptr;
     ptr->size = new_size;
@@ -132,6 +136,7 @@ static bool prio_queue_insert(prio_queue_t *ptr, void *item)
     return true;
 }
 
+/* FIXME: segmentation fault in multithread environment */
 static int timer_comp(void *ti, void *tj)
 {
     return ((timer_node *) ti)->key < ((timer_node *) tj)->key ? 1 : 0;
@@ -150,6 +155,8 @@ static void time_update()
 
 int timer_init()
 {
+    pthread_mutex_init(&timer_lock, NULL);
+    pthread_cond_init(&timer_notify, NULL);
     bool ret UNUSED = prio_queue_init(&timer, timer_comp, PQ_DEFAULT_SIZE);
     assert(ret && "prio_queue_init error");
 
@@ -198,8 +205,9 @@ void handle_expired_timers()
             continue;
         }
 
-        if (node->key > current_msec)
+        if (node->key > current_msec) {
             return;
+        }
         if (node->callback)
             node->callback(node->request);
 
