@@ -3,14 +3,13 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "http.h"
+#include "io_uring.h"
 #include "logger.h"
-#include "timer.h"
 
 #define MAXLINE 8192
 #define SHORTLINE 512
@@ -219,12 +218,6 @@ void do_request(void *ptr, int read_bytes)
     char filename[SHORTLINE];
     webroot = r->root;
 
-    if (n == 0) /* EOF */
-        goto err;
-    else if (n < 0 && errno != EAGAIN) {
-        log_err("read err, and errno = %d", errno);
-        goto err;
-    }
 
     r->pos = 0;
     r->last = n;
