@@ -1,7 +1,6 @@
 #ifndef TIMER_H
 #define TIMER_H
 
-#include <pthread.h>
 #include <stdbool.h>
 #include "http.h"
 
@@ -23,6 +22,4 @@ void handle_expired_timers();
 void add_timer(http_request_t *req, size_t timeout, timer_callback cb);
 void del_timer(http_request_t *req);
 
-extern pthread_mutex_t timer_lock;
-extern pthread_cond_t timer_notify;
 #endif
