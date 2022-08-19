@@ -10,6 +10,7 @@
 #include "http.h"
 #include "io_uring.h"
 #include "logger.h"
+#include "timer.h"
 
 #define MAXLINE 8192
 #define SHORTLINE 512
