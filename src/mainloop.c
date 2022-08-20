@@ -1,9 +1,6 @@
 #include <arpa/inet.h>
 #include <assert.h>
-#include <ctype.h>
-#include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,11 +11,16 @@
 
 #include "http.h"
 #include "logger.h"
+#include "memory_pool.h"
+#include "thread_pool.h"
 #include "timer.h"
 
 /* the length of the struct epoll_events array pointed to by *events */
 #define MAXEVENTS 1024
+
 #define LISTENQ 1024
+
+#define N_THREADS 4
 
 static int open_listenfd(int port)
 {
@@ -71,70 +73,12 @@ static int sock_set_non_blocking(int fd)
     return 0;
 }
 
-#define DEFAULT_PORT 8081
-#define DEFAULT_WEBROOT "./www"
+/* TODO: use command line options to specify */
+#define PORT 8081
+#define WEBROOT "./www"
 
-static int cmd_get_port(char *arg_port)
+int main()
 {
-    long ret;
-    char *endptr;
-
-    ret = strtol(arg_port, &endptr, 10);
-    if ((errno == ERANGE && (ret == LONG_MAX || ret == LONG_MIN)) ||
-        (errno != 0 && ret == 0)) {
-        fprintf(stderr, "Failed to parse port number: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    if (endptr == arg_port) {
-        fprintf(stderr, "No digits were found\n");
-        exit(EXIT_FAILURE);
-    }
-
-    /* strtol successfully parse arg_port, and check boundary condition */
-    if (ret <= 0 || ret > 65535) {
-        ret = DEFAULT_PORT;
-    }
-    return ret;
-}
-
-struct runtime_conf {
-    int port;
-    char *web_root;
-};
-
-static struct runtime_conf *parse_cmd(int argc, char **argv)
-{
-    int cmdopt = 0;
-    struct runtime_conf *cfg = malloc(sizeof(struct runtime_conf));
-
-    while ((cmdopt = getopt(argc, argv, "p:r:")) != -1) {
-        switch (cmdopt) {
-        case 'p':
-            cfg->port = cmd_get_port(optarg);
-            break;
-        case 'w':
-            cfg->web_root = optarg;
-            break;
-        case '?':
-            fprintf(stderr, "Illeggal option: -%c\n",
-                    isprint(optopt) ? optopt : '#');
-            exit(EXIT_FAILURE);
-            break;
-        default:
-            fprintf(stderr, "Not supported option\n");
-            break;
-        }
-    }
-
-    if (!cfg->web_root)
-        cfg->web_root = DEFAULT_WEBROOT;
-    return cfg;
-}
-
-int main(int argc, char **argv)
-{
-    struct runtime_conf *cfg = parse_cmd(argc, argv);
     /* when a fd is closed by remote, writing to this fd will cause system
      * send SIGPIPE to this process, which exit the program
      */
@@ -145,7 +89,10 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    int listenfd = open_listenfd(cfg->port);
+    init_req_pool(N_THREADS);
+    init_job_pool(N_THREADS);
+
+    int listenfd = open_listenfd(PORT);
     int rc UNUSED = sock_set_non_blocking(listenfd);
     assert(rc == 0 && "sock_set_non_blocking");
 
@@ -156,8 +103,9 @@ int main(int argc, char **argv)
     struct epoll_event *events = malloc(sizeof(struct epoll_event) * MAXEVENTS);
     assert(events && "epoll_event: malloc");
 
-    http_request_t *request = malloc(sizeof(http_request_t));
-    init_http_request(request, listenfd, epfd, cfg->web_root);
+    http_request_t *request;
+    get_request(&request);
+    init_http_request(request, listenfd, epfd, WEBROOT);
 
     struct epoll_event event = {
         .data.ptr = request,
@@ -167,14 +115,21 @@ int main(int argc, char **argv)
 
     timer_init();
 
+    // threadpool_t *pool = threadpool_create(N_THREADS, N_JOBS, 0);
+    threadpool pool = thpool_init(N_THREADS);
+
     printf("Web server started.\n");
 
     /* epoll_wait loop */
     while (1) {
+        pthread_mutex_lock(&timer_lock);
         int time = find_timer();
+        pthread_mutex_unlock(&timer_lock);
         debug("wait time = %d", time);
         int n = epoll_wait(epfd, events, MAXEVENTS, time);
+        pthread_mutex_lock(&timer_lock);
         handle_expired_timers();
+        pthread_mutex_unlock(&timer_lock);
 
         for (int i = 0; i < n; i++) {
             http_request_t *r = events[i].data.ptr;
@@ -198,18 +153,20 @@ int main(int argc, char **argv)
                     rc = sock_set_non_blocking(infd);
                     assert(rc == 0 && "sock_set_non_blocking");
 
-                    request = malloc(sizeof(http_request_t));
+                    get_request(&request);
                     if (!request) {
                         log_err("malloc");
                         break;
                     }
 
-                    init_http_request(request, infd, epfd, cfg->web_root);
+                    init_http_request(request, infd, epfd, WEBROOT);
                     event.data.ptr = request;
                     event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
                     epoll_ctl(epfd, EPOLL_CTL_ADD, infd, &event);
 
+                    pthread_mutex_lock(&timer_lock);
                     add_timer(request, TIMEOUT_DEFAULT, http_close_conn);
+                    pthread_mutex_unlock(&timer_lock);
                 }
             } else {
                 if ((events[i].events & EPOLLERR) ||
@@ -220,11 +177,11 @@ int main(int argc, char **argv)
                     continue;
                 }
 
-                do_request(events[i].data.ptr);
+                // do_request(events[i].data.ptr);
+                thpool_add_work(pool, do_request, events[i].data.ptr);
             }
         }
     }
 
-    free(cfg);
     return 0;
 }
