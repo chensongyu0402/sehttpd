@@ -2,6 +2,7 @@
 #define HTTP_H
 
 #include <errno.h>
+#include <liburing.h>
 #include <stdbool.h>
 #include <time.h>
 
@@ -26,6 +27,8 @@ enum http_status {
     HTTP_NOT_FOUND = 404,
 };
 
+enum event_types { ACCEPT, READ, WRITE, TIMEOUT };
+
 #define MAX_BUF 8124
 
 typedef struct {
@@ -46,7 +49,9 @@ typedef struct {
     void *cur_header_value_start, *cur_header_value_end;
 
     void *timer;
-    int pool_id;
+    enum event_types event_type;
+    struct io_uring *ring;
+    bool keep_alive;
 } http_request_t;
 
 typedef struct {
@@ -80,18 +85,20 @@ int http_close_conn(http_request_t *r);
 
 static inline void init_http_request(http_request_t *r,
                                      int fd,
-                                     int epfd,
-                                     char *root)
+                                     char *root,
+                                     struct io_uring *ring)
 {
-    r->fd = fd, r->epfd = epfd;
+    r->fd = fd;
     r->pos = r->last = 0;
     r->state = 0;
+    r->keep_alive = true;
     r->root = root;
+    r->ring = ring;
     INIT_LIST_HEAD(&(r->list));
 }
 
 /* TODO: public functions should have conventions to prefix http_ */
-void do_request(void *infd);
+void do_request(void *infd, int read_bytes);
 
 int http_parse_request_line(http_request_t *r);
 int http_parse_request_body(http_request_t *r);
