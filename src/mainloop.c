@@ -1,23 +1,20 @@
 #include <arpa/inet.h>
 #include <assert.h>
-#include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <limits.h>
+#include <liburing.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include "http.h"
+#include "io_uring.h"
 #include "logger.h"
-#include "timer.h"
 
 /* the length of the struct epoll_events array pointed to by *events */
 #define MAXEVENTS 1024
+
 #define LISTENQ 1024
 
 static int open_listenfd(int port)
@@ -50,91 +47,12 @@ static int open_listenfd(int port)
     return listenfd;
 }
 
-/* set a socket non-blocking. If a listen socket is a blocking socket, after
- * it comes out from epoll and accepts the last connection, the next accpet
- * will block unexpectedly.
- */
-static int sock_set_non_blocking(int fd)
+/* TODO: use command line options to specify */
+#define PORT 8081
+#define WEBROOT "./www"
+
+int main()
 {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) {
-        log_err("fcntl");
-        return -1;
-    }
-
-    flags |= O_NONBLOCK;
-    int s = fcntl(fd, F_SETFL, flags);
-    if (s == -1) {
-        log_err("fcntl");
-        return -1;
-    }
-    return 0;
-}
-
-#define DEFAULT_PORT 8081
-#define DEFAULT_WEBROOT "./www"
-
-static int cmd_get_port(char *arg_port)
-{
-    long ret;
-    char *endptr;
-
-    ret = strtol(arg_port, &endptr, 10);
-    if ((errno == ERANGE && (ret == LONG_MAX || ret == LONG_MIN)) ||
-        (errno != 0 && ret == 0)) {
-        fprintf(stderr, "Failed to parse port number: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    if (endptr == arg_port) {
-        fprintf(stderr, "No digits were found\n");
-        exit(EXIT_FAILURE);
-    }
-
-    /* strtol successfully parse arg_port, and check boundary condition */
-    if (ret <= 0 || ret > 65535) {
-        ret = DEFAULT_PORT;
-    }
-    return ret;
-}
-
-struct runtime_conf {
-    int port;
-    char *web_root;
-};
-
-static struct runtime_conf *parse_cmd(int argc, char **argv)
-{
-    int cmdopt = 0;
-    struct runtime_conf *cfg = malloc(sizeof(struct runtime_conf));
-
-    while ((cmdopt = getopt(argc, argv, "p:r:")) != -1) {
-        switch (cmdopt) {
-        case 'p':
-            cfg->port = cmd_get_port(optarg);
-            break;
-        case 'w':
-            cfg->web_root = optarg;
-            break;
-        case '?':
-            fprintf(stderr, "Illeggal option: -%c\n",
-                    isprint(optopt) ? optopt : '#');
-            exit(EXIT_FAILURE);
-            break;
-        default:
-            fprintf(stderr, "Not supported option\n");
-            break;
-        }
-    }
-
-    if (!cfg->web_root)
-        cfg->web_root = DEFAULT_WEBROOT;
-    return cfg;
-}
-
-int main(int argc, char **argv)
-{
-    struct runtime_conf *cfg = parse_cmd(argc, argv);
     /* when a fd is closed by remote, writing to this fd will cause system
      * send SIGPIPE to this process, which exit the program
      */
@@ -145,86 +63,64 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    int listenfd = open_listenfd(cfg->port);
-    int rc UNUSED = sock_set_non_blocking(listenfd);
-    assert(rc == 0 && "sock_set_non_blocking");
+    int listenfd = open_listenfd(PORT);
 
-    /* create epoll and add listenfd */
-    int epfd = epoll_create1(0 /* flags */);
-    assert(epfd > 0 && "epoll_create1");
+    struct io_uring *ring = malloc(sizeof(*ring));
+    io_uring_init(ring);
+    http_request_t *r = malloc(sizeof(*r));
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    add_accept_request(ring, r, listenfd, (struct sockaddr *) &client_addr,
+                       &client_len);
 
-    struct epoll_event *events = malloc(sizeof(struct epoll_event) * MAXEVENTS);
-    assert(events && "epoll_event: malloc");
-
-    http_request_t *request = malloc(sizeof(http_request_t));
-    init_http_request(request, listenfd, epfd, cfg->web_root);
-
-    struct epoll_event event = {
-        .data.ptr = request,
-        .events = EPOLLIN | EPOLLET,
-    };
-    epoll_ctl(epfd, EPOLL_CTL_ADD, listenfd, &event);
-
-    timer_init();
-
-    printf("Web server started.\n");
-
-    /* epoll_wait loop */
     while (1) {
-        int time = find_timer();
-        debug("wait time = %d", time);
-        int n = epoll_wait(epfd, events, MAXEVENTS, time);
-        handle_expired_timers();
+        struct io_uring_cqe *cqe;
+        io_uring_wait_cqe(ring, &cqe);
+        http_request_t *cqe_req = io_uring_cqe_get_data(cqe);
+        enum event_types type = cqe_req->event_type;
 
-        for (int i = 0; i < n; i++) {
-            http_request_t *r = events[i].data.ptr;
-            int fd = r->fd;
-            if (listenfd == fd) {
-                /* we have one or more incoming connections */
-                while (1) {
-                    socklen_t inlen = 1;
-                    struct sockaddr_in clientaddr;
-                    int infd = accept(listenfd, (struct sockaddr *) &clientaddr,
-                                      &inlen);
-                    if (infd < 0) {
-                        if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
-                            /* we have processed all incoming connections */
-                            break;
-                        }
-                        log_err("accept");
-                        break;
-                    }
-
-                    rc = sock_set_non_blocking(infd);
-                    assert(rc == 0 && "sock_set_non_blocking");
-
-                    request = malloc(sizeof(http_request_t));
-                    if (!request) {
-                        log_err("malloc");
-                        break;
-                    }
-
-                    init_http_request(request, infd, epfd, cfg->web_root);
-                    event.data.ptr = request;
-                    event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
-                    epoll_ctl(epfd, EPOLL_CTL_ADD, infd, &event);
-
-                    add_timer(request, TIMEOUT_DEFAULT, http_close_conn);
-                }
-            } else {
-                if ((events[i].events & EPOLLERR) ||
-                    (events[i].events & EPOLLHUP) ||
-                    (!(events[i].events & EPOLLIN))) {
-                    log_err("epoll error fd: %d", r->fd);
-                    close(fd);
-                    continue;
-                }
-
-                do_request(events[i].data.ptr);
+        if (type == ACCEPT) {
+            add_accept_request(ring, r, listenfd,
+                               (struct sockaddr *) &client_addr, &client_len);
+            int clientfd = cqe->res;
+            if (clientfd >= 0) {
+                http_request_t *request = malloc(sizeof(http_request_t));
+                init_http_request(request, clientfd, WEBROOT, ring);
+                add_read_request(ring, request);
             }
+        } else if (type == READ) {
+            int read_bytes = cqe->res;
+            if (read_bytes <= 0) {
+                if (read_bytes < 0) {
+                    fprintf(stderr, "Async request failed: %s for event: %d\n",
+                            strerror(-cqe->res), cqe_req->event_type);
+                }
+                int ret = http_close_conn(cqe_req);
+                assert(ret == 0 && "http_close_conn");
+            } else {
+                do_request(cqe_req, read_bytes);
+            }
+        } else if (type == WRITE) {
+            int write_bytes = cqe->res;
+            if (write_bytes <= 0) {
+                if (write_bytes < 0) {
+                    fprintf(stderr, "Async request failed: %s for event: %d\n",
+                            strerror(-cqe->res), cqe_req->event_type);
+                }
+                int ret = http_close_conn(cqe_req);
+                assert(ret == 0 && "http_close_conn");
+            } else {
+                if (cqe_req->keep_alive == false)
+                    http_close_conn(cqe_req);
+                else
+                    add_read_request(ring, cqe_req);
+            }
+        } else if (type == TIMEOUT) {
+            free(cqe_req);
         }
+        io_uring_cq_advance(ring, 1);
     }
+    io_uring_queue_exit(ring);
 
-    free(cfg);
     return 0;
 }

@@ -149,6 +149,7 @@ validate_commit_message() {
 
   # 0. Check spelling
   # ------------------------------------------------------------------------------
+  '''
   ASPELL=$(which aspell)
   if [ $? -ne 0 ]; then
       echo "Aspell not installed - unable to check spelling"
@@ -159,6 +160,7 @@ validate_commit_message() {
         add_warning LINE_NUMBER "Possible misspelled word(s): $MISSPELLED_WORDS"
       fi
   fi
+  '''
 
   # 1. Separate subject from body with a blank line
   # ------------------------------------------------------------------------------
