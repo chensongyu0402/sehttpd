@@ -11,10 +11,10 @@ include common.mk
 
 CFLAGS = -I./src
 CFLAGS += -O2
-CFLAGS += -std=gnu99 -Wall -W
+CFLAGS += -std=gnu99 -Wall -W -g
 CFLAGS += -DUNUSED="__attribute__((unused))"
 CFLAGS += -DNDEBUG
-LDFLAGS =
+LDFLAGS = -luring -g
 
 # standard build rules
 .SUFFIXES: .o .c
@@ -27,6 +27,7 @@ OBJS = \
     src/http_parser.o \
     src/http_request.o \
     src/timer.o \
+	src/io_uring.o \
     src/mainloop.o
 deps += $(OBJS:%.o=%.o.d)
 
