@@ -1,14 +1,27 @@
+# sehttpd
+###### tags: `github_project`
+
 # seHTTPd
 
 `seHTTPd` implements a small and efficient web server with 1K lines of C code.
 I/O multiplexing is achieved using [epoll](http://man7.org/linux/man-pages/man7/epoll.7.html).
 
 ## Features
-
+### original version
 * Single-threaded, non-blocking I/O based on event-driven model
 * HTTP persistent connection (HTTP Keep-Alive)
 * A timer for executing the handler after having waited the specified time
-
+### Improvement
+* Using epoll API to monitor multiple file descriptors to see if I/O is possible on any of them
+* Use sendfile() for zero-copy
+* Use multithreading to achieve high performance
+* Use threadpool to reduce thread creation overhead
+* Use memorypool to reduce http_request creation overhead
+* Use wrk and htstress to evaluate sehttpd web server with keep-alive and without keep-alive performance
+### Result
+* Compare performance between original version and final version
+* ![](https://i.imgur.com/dykxiQS.png)
+* ![](https://i.imgur.com/3SUft44.png)
 ## High-level Design
 
 ```text
